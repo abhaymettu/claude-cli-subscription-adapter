@@ -1,8 +1,8 @@
 # claude-cli-subscription-adapter
 
-A small local server that answers the Anthropic Messages API (`POST /v1/messages`) by running the official `claude` CLI. Point any Anthropic API client at it with `ANTHROPIC_BASE_URL`, and its requests run on the Claude subscription your CLI is logged in with (Pro or Max) instead of a metered API key.
+A small local server that answers the Anthropic Messages API (`POST /v1/messages`) and the OpenAI Chat Completions API (`POST /v1/chat/completions`) by running the official `claude` CLI. Point an Anthropic client at it with `ANTHROPIC_BASE_URL`, or an OpenAI-compatible client with `OPENAI_BASE_URL`, and its requests run on the Claude subscription your CLI is logged in with (Pro or Max) instead of a metered API key.
 
-It is about 500 lines of TypeScript for [Bun](https://bun.sh), with no dependencies.
+It is about 700 lines of TypeScript for [Bun](https://bun.sh), with no dependencies.
 
 > The adapter never reads, copies or forwards your Claude login. It only starts the `claude` CLI, which uses its own login as it always does, and reads what the CLI prints.
 
@@ -32,6 +32,27 @@ msg = client.messages.create(model="claude-haiku-5-5", max_tokens=200,
                              messages=[{"role": "user", "content": "Say pong."}])
 print(msg.content[0].text)
 ```
+
+### OpenAI-compatible clients
+
+Agents and libraries that speak the OpenAI API can use the same server. Point them at the `/v1` path and give any API key:
+
+```sh
+export OPENAI_BASE_URL=http://127.0.0.1:8789/v1
+export OPENAI_API_KEY=unused   # any value; checked only when CLAUDE_SHIM_TOKEN is set
+```
+
+A quick check with the OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8789/v1", api_key="unused")
+r = client.chat.completions.create(model="claude-haiku-5-5",
+                                   messages=[{"role": "user", "content": "Say pong."}])
+print(r.choices[0].message.content)
+```
+
+Use Claude model IDs (`GET /v1/models` lists `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5`). Other IDs are passed to the CLI as given.
 
 ### Settings
 
@@ -81,7 +102,25 @@ The adapter removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE
 | `cache_control` marks | Dropped. The CLI places its own cache breakpoints. |
 | Server tools (web search, code execution), `tool_choice` | Not offered. Server tool blocks in the history are dropped. |
 | `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `metadata` | Ignored. The CLI chooses its own output cap. |
-| `/v1/messages/count_tokens`, batches, files, models | Not offered (404) |
+| `/v1/messages/count_tokens`, batches, files | Not offered (404) |
+
+The OpenAI Chat Completions endpoint is translated to the same request:
+
+| Chat Completions feature | Status |
+|---|---|
+| `POST /v1/chat/completions`, streamed (`stream: true`) or whole | Supported. Streams end with `data: [DONE]`. |
+| `stream_options.include_usage` | Supported. A final chunk carries `usage`. |
+| `system` and `developer` messages | Joined into the system prompt |
+| `user` messages as a string or as `text` parts | Supported |
+| `image_url` parts | Supported for base64 `data:` URLs only |
+| Function tools (`tools` with `type: "function"`), `tool_calls`, `tool` messages | Supported, streamed as indexed `tool_calls` deltas |
+| `reasoning_effort` (`low` to `max`) | Passed to the CLI as `--effort` |
+| `finish_reason` | `stop`, `tool_calls`, `length` or `content_filter`, from the Claude stop reason |
+| `GET /v1/models` | Lists the Claude model IDs above |
+| `tool_choice`, `parallel_tool_calls`, `response_format`, `n`, `logprobs` | Not offered |
+| `max_tokens`, `max_completion_tokens`, `temperature`, `top_p`, `stop`, `seed` | Ignored. The CLI chooses its own output cap. |
+| Thinking | Not shown in the reply |
+| `/v1/completions`, `/v1/embeddings`, `/v1/responses`, audio and images | Not offered (404) |
 
 ## Limits
 
@@ -119,13 +158,15 @@ The tests use a fake `claude` that speaks stream-json, so they need no login and
 - the kill at `message_stop`, checked by a second reply that must never arrive;
 - CLI errors and a missing binary are refused, not retried or hung;
 - the inert MCP server lists tools and runs none;
-- the HTTP server: loopback binding, token, 404s, and streamed and whole responses.
+- the HTTP server: loopback binding, token, 404s, and streamed and whole responses;
+- the OpenAI endpoint: a tool-call history mapped in, tool calls and usage mapped out, streamed text and tool-call chunks ending in `[DONE]`, and errors.
 
 By hand, on Claude Code 2.1.303 with a Max login: the official Anthropic Python SDK, whole and streamed, a custom tool call, and a replayed multi-turn history all worked through the adapter, and no CLI process was left running afterwards.
 
+The OpenAI endpoint was checked the same way with the official OpenAI Python SDK (2.48.0): a whole reply, a function tool call, the reply after the tool result, streamed, and `models.list()`.
+
 ## Roadmap
 
-- An OpenAI-compatible endpoint (`/v1/chat/completions`) over the same CLI driver.
 - Stripping or rewriting top-level `oneOf`/`anyOf` in tool schemas.
 
 ## Origin and license

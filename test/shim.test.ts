@@ -1,5 +1,6 @@
 // `bun test`. The adapter against a fake claude CLI that speaks stream-json,
-// so no test uses a login or any quota.
+// so no test uses a login or any quota. Covers the Messages API and the
+// OpenAI Chat Completions endpoint.
 
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -203,5 +204,65 @@ test("the shim answers the Messages API on loopback, streamed and whole, behind 
   } finally {
     server.stop(true);
     delete process.env.CLAUDE_SHIM_TOKEN;
+  }
+});
+
+test("the OpenAI endpoint maps a tool-call history in, and a tool call and usage out, whole", async () => {
+  const server = Shim.serve(0);
+  const base = "http://127.0.0.1:" + server.port + "/v1";
+  const ask = (body: object) => fetch(base + "/chat/completions", { method: "POST", headers: { authorization: "Bearer any", "content-type": "application/json" }, body: JSON.stringify(body) });
+  try {
+    expect((await (await fetch(base + "/models")).json()).data.map((m: any) => m.id)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+    expect((await ask({ model: "m", messages: [{ role: "robot", content: "x" }] })).status).toBe(400);
+    fresh("tool");
+    const whole = await (await ask({
+      model    : "claude-haiku-5-5",
+      tools    : [{ type: "function", function: { name: "zoom", description: "d", parameters: { type: "object", properties: { id: { type: "string" } } } } }],
+      messages : [
+        { role: "system", content: "sys" },
+        { role: "user", content: "find 7" },
+        { role: "assistant", content: null, tool_calls: [{ id: "tu_0", type: "function", function: { name: "zoom", arguments: '{"id":"6"}' } }] },
+        { role: "tool", tool_call_id: "tu_0", content: "six" },
+      ],
+    })).json();
+    expect(whole.object).toBe("chat.completion");
+    expect(whole.choices).toEqual([{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "tu_1", type: "function", function: { name: "zoom", arguments: '{"id":"7"}' } }] }, finish_reason: "tool_calls" }]);
+    expect(whole.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+    expect(rows().filter((r) => r.frame).map((r) => r.frame)).toEqual([
+      { type: "user", message: { role: "user", content: [{ type: "text", text: "find 7" }] }, shouldQuery: false },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu_0", name: PREFIX + "zoom", input: { id: "6" } }] } },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_0", content: "six" }] } },
+    ]);
+    fresh("error");
+    const refused = await ask({ model: "m", messages: [{ role: "user", content: "hi" }] });
+    expect(refused.status).toBe(502);
+    expect((await refused.json()).error.type).toBe("api_error");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("the OpenAI endpoint streams text and tool calls as chunks ending in [DONE]", async () => {
+  const server = Shim.serve(0);
+  const ask = (body: object) => fetch("http://127.0.0.1:" + server.port + "/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const read = async (res: Response) => {
+    const lines = (await res.text()).split("\n\n").filter(Boolean).map((l) => l.replace(/^data: /, ""));
+    expect(lines[lines.length - 1]).toBe("[DONE]");
+    return lines.slice(0, -1).map((l) => JSON.parse(l));
+  };
+  try {
+    fresh("text");
+    const text = await read(await ask({ model: "claude-haiku-5-5", stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "hi" }] }));
+    expect(text.map((c) => c.choices[0]?.delta?.content ?? "").join("")).toBe("hello 1");
+    expect(text.map((c) => c.choices[0]?.finish_reason).filter(Boolean)).toEqual(["stop"]);
+    expect(text[text.length - 1].usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+    fresh("tool");
+    const tool = await read(await ask({ model: "claude-haiku-5-5", stream: true, tools: [{ type: "function", function: { name: "zoom", parameters: { type: "object" } } }], messages: [{ role: "user", content: "find 7" }] }));
+    const calls = tool.flatMap((c) => c.choices[0]?.delta?.tool_calls ?? []);
+    expect(calls[0]).toEqual({ index: 0, id: "tu_1", type: "function", function: { name: "zoom", arguments: "" } });
+    expect(calls.slice(1).map((c) => c.function.arguments).join("")).toBe('{"id":"7"}');
+    expect(tool[tool.length - 1].choices[0].finish_reason).toBe("tool_calls");
+  } finally {
+    server.stop(true);
   }
 });
