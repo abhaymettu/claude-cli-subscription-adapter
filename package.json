@@ -1,0 +1,15 @@
+{
+  "name": "claude-cli-subscription-adapter",
+  "version": "0.1.0",
+  "description": "A loopback Anthropic Messages API endpoint answered by the official claude CLI, so API clients can run on a Claude subscription login.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun src/Shim.ts",
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": ">=1.1"
+  }
+}

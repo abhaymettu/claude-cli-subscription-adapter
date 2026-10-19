@@ -1,0 +1,9 @@
+claude-cli-subscription-adapter
+Copyright 2026 Abhay Mettu
+
+This adapter was first written as the claude-cli vendor of a fork of UniiChat
+(https://github.com/VictorTaelin/UniiChat, Copyright 2026 Higher Order Company,
+licensed under the Apache License, Version 2.0) and extracted into this
+standalone project. Its structure follows UniiChat's Anthropic wire.
+
+Not affiliated with or endorsed by Anthropic. "Claude" is a trademark of Anthropic.
